@@ -1,4 +1,4 @@
-**Download `NameOCR-Setup-….exe` below and run it.** Windows may say "Windows protected your PC". Click **More info → Run anyway** (NameOCR isn't signed by a paid publisher). See the README for setup.
+**For Windows 10 and 11 (64-bit).** Download **`NameOCR-Setup-…-x64.exe`** below and run it. Windows may say "Windows protected your PC". Click **More info → Run anyway** (NameOCR isn't signed by a paid publisher). See the README for setup.
 
 New in 1.0.1:
 - The installer now works like a normal one: choose where to install (Browse…), install for just you or for everyone on the PC, and choose whether to add a desktop shortcut

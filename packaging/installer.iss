@@ -20,7 +20,9 @@ DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 OutputDir=Output
-OutputBaseFilename=NameOCR-Setup-{#AppVersion}
+OutputBaseFilename=NameOCR-Setup-{#AppVersion}-x64
+; Windows 10 or newer only (Setup says so politely on anything older)
+MinVersion=10.0
 SetupIconFile=..\icon.ico
 UninstallDisplayIcon={app}\NameOCR.exe
 UninstallDisplayName=NameOCR

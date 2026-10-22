@@ -1,4 +1,4 @@
-# Builds NameOCR-Setup-<version>.exe on a Windows machine and publishes it as a
+# Builds NameOCR-Setup-<version>-x64.exe on a Windows machine and publishes it as a
 # GitHub release named after VERSION in config.py.
 # Run it by hand: Actions tab > "Build installer" > Run workflow.
 # (Pushing a tag like v1.0.1 also runs it; the tag must match VERSION.)
