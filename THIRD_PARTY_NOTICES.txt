@@ -1,0 +1,19 @@
+NameOCR includes the following open-source software. Each remains under its own
+licence; the full licence texts are at the linked pages.
+
+Tesseract OCR (bundled program)      Apache License 2.0
+  https://github.com/tesseract-ocr/tesseract
+  Windows build by UB Mannheim: https://github.com/UB-Mannheim/tesseract
+
+Qt / PySide6                          GNU LGPL v3
+  https://www.qt.io/  https://pypi.org/project/PySide6/
+  Qt is used as separate, replaceable libraries in the program folder.
+
+pynput                                GNU LGPL v3      https://github.com/moses-palmer/pynput
+pytesseract                           Apache License 2.0  https://github.com/madmaze/pytesseract
+Pillow                                MIT-CMU (HPND)   https://github.com/python-pillow/Pillow
+NumPy                                 BSD 3-Clause     https://numpy.org/
+mss                                   MIT              https://github.com/BoboTiG/python-mss
+requests                              Apache License 2.0  https://github.com/psf/requests
+Python                                PSF License      https://www.python.org/
+PyInstaller (bootloader)              GPL with bootloader exception  https://pyinstaller.org/

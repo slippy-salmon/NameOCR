@@ -1,0 +1,11 @@
+# personal data: never commit
+settings.json
+settings.json.tmp
+nameocr.log
+debug_frames/
+# build output
+build/
+dist/
+packaging/Output/
+__pycache__/
+*.pyc

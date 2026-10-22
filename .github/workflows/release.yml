@@ -1,0 +1,94 @@
+# Builds NameOCR-Setup-<version>.exe on a Windows machine and publishes it as a
+# GitHub release named after VERSION in config.py.
+# Run it by hand: Actions tab > "Build installer" > Run workflow.
+# (Pushing a tag like v1.0.1 also runs it; the tag must match VERSION.)
+name: Build installer
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Work out the version
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path config.py -Pattern '^VERSION = "(.+)"').Matches[0].Groups[1].Value
+          if ($env:GITHUB_REF_TYPE -eq "tag" -and $env:GITHUB_REF_NAME.TrimStart("v") -ne $v) {
+            throw "Tag $env:GITHUB_REF_NAME doesn't match VERSION $v in config.py"
+          }
+          "APP_VERSION=$v" >> $env:GITHUB_ENV
+          Write-Host "Building NameOCR $v"
+          # point the in-app update check at this repository
+          (Get-Content config.py) -replace '^REPO = ""', "REPO = `"$env:GITHUB_REPOSITORY`"" | Set-Content config.py
+          Select-String -Path config.py -Pattern '^REPO = ' 
+
+      - name: Install Python packages
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Get Tesseract
+        shell: pwsh
+        run: |
+          choco install tesseract -y --no-progress
+          $exe = Get-ChildItem "C:\Program Files", "C:\Program Files (x86)" -Recurse -Filter tesseract.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) { throw "tesseract.exe not found after install" }
+          $src = $exe.DirectoryName
+          $dst = "$env:RUNNER_TEMP\tesseract"
+          New-Item -ItemType Directory -Force "$dst\tessdata" | Out-Null
+          Copy-Item "$src\tesseract.exe" $dst
+          Copy-Item "$src\*.dll" $dst
+          Copy-Item "$src\tessdata\eng.traineddata" "$dst\tessdata\"
+          Get-ChildItem $src -File | Where-Object { $_.Name -match 'LICENSE|COPYING|NOTICE' } | Copy-Item -Destination $dst
+          & "$dst\tesseract.exe" --version
+          "TESSERACT_DIR=$dst" >> $env:GITHUB_ENV
+
+      - name: Build the app
+        run: pyinstaller packaging/NameOCR.spec --noconfirm --distpath dist --workpath build
+
+      - name: Check the bundled Tesseract runs
+        shell: pwsh
+        run: |
+          $t = Get-ChildItem dist\NameOCR -Recurse -Filter tesseract.exe | Select-Object -First 1
+          if (-not $t) { throw "Tesseract missing from the build" }
+          & $t.FullName --version
+          $env:TESSDATA_PREFIX = Join-Path $t.DirectoryName "tessdata"   # as the app sets it
+          $langs = & $t.FullName --list-langs 2>&1 | Out-String
+          Write-Host $langs
+          if ($langs -notmatch "eng") { throw "English language data not found by the bundled Tesseract" }
+
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          $iscc = Get-ChildItem "C:\Program Files (x86)", "C:\Program Files" -Recurse -Filter ISCC.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $iscc) { throw "Inno Setup compiler not found" }
+          & $iscc.FullName packaging\installer.iss
+          if ($LASTEXITCODE -ne 0) { throw "Installer build failed" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NameOCR-Setup-${{ env.APP_VERSION }}
+          path: packaging/Output/*.exe
+
+      - name: Publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.APP_VERSION }}
+          name: NameOCR ${{ env.APP_VERSION }}
+          files: packaging/Output/*.exe
+          body_path: RELEASE_NOTES.md
+          make_latest: true
