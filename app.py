@@ -680,7 +680,7 @@ class Main(QMainWindow):
         self.cfg = config.load()
         self.players, self.scanner, self.worker = [], None, None
         self.state = "idle"
-        self.setWindowTitle(f"NameOCR {config.VERSION}")
+        self.setWindowTitle(f"NameOCR {config.VERSION}" + (" (dev)" if config.DEV else ""))
         self.setWindowIcon(QIcon(os.path.join(config.RES, "icon.png")))
         self.resize(720, 640)
 
@@ -1160,7 +1160,7 @@ def main():
     if sys.platform == "win32":
         try:
             import ctypes
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("NameOCR")
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(config.APP_ID)
         except Exception:
             pass
     app = QApplication(sys.argv)

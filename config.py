@@ -16,6 +16,10 @@ REPO = ""            # "owner/name" on GitHub, for the update check ("" = off)
 HERE = os.path.dirname(os.path.abspath(__file__))
 # bundled resources: next to the code, or inside the packaged app
 RES = getattr(sys, "_MEIPASS", HERE)
+# running from source (the "workshop" copy) rather than the installed app:
+# its own taskbar identity and "(dev)" in the title, so the two never get mixed up
+DEV = not getattr(sys, "frozen", False)
+APP_ID = "NameOCR.Dev" if DEV else "NameOCR"
 
 
 def _data_dir():
