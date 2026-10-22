@@ -31,8 +31,11 @@ def _data_dir():
 
 DATA = _data_dir()
 PATH = os.path.join(DATA, "settings.json")
-LOG = os.path.join(DATA, "nameocr.log")
-FRAMES = os.path.join(DATA, "debug_frames")
+# the log and saved frames; a dev copy keeps its own next to the code, so test
+# scans stay with the code being tested (settings are still shared)
+LOGS = HERE if DEV else DATA
+LOG = os.path.join(LOGS, "nameocr.log")
+FRAMES = os.path.join(LOGS, "debug_frames")
 
 # settings from before they moved to AppData (kept next to the code)
 _old = os.path.join(HERE, "settings.json")

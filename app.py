@@ -444,13 +444,19 @@ class SettingsDialog(QDialog):
         ol.addWidget(g)
         g = QGroupBox("Your data")
         v = QVBoxLayout(g)
-        lab = QLabel(f"Settings, the log and saved scan frames are kept in:<br>"
+        if config.LOGS == config.DATA:
+            where = (f"Settings, the log and saved scan frames are kept in:<br>"
                      f"<span style='color:#aab0bb'>{config.DATA}</span>")
+        else:   # dev copy
+            where = (f"Settings are kept in:<br><span style='color:#aab0bb'>{config.DATA}</span><br>"
+                     f"This dev copy's log and saved frames are kept in:<br>"
+                     f"<span style='color:#aab0bb'>{config.LOGS}</span>")
+        lab = QLabel(where)
         lab.setWordWrap(True)
         lab.setTextInteractionFlags(Qt.TextSelectableByMouse)
         v.addWidget(lab)
         openb = QPushButton("Open data folder")
-        openb.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(config.DATA)))
+        openb.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(config.LOGS)))
         row = QHBoxLayout()
         row.addWidget(openb)
         row.addWidget(info("If something goes wrong, send nameocr.log from this folder to "
