@@ -11,10 +11,14 @@ AppName=NameOCR
 AppVersion={#AppVersion}
 AppVerName=NameOCR {#AppVersion}
 AppPublisher=Slippy
-DefaultDirName={localappdata}\Programs\NameOCR
-DisableDirPage=yes
+; {autopf} is %LOCALAPPDATA%\Programs for "just me" and Program Files for "everyone"
+DefaultDirName={autopf}\NameOCR
+; show the folder page on first install (Browse... to change it); upgrades reuse the same folder
+DisableDirPage=auto
 DisableProgramGroupPage=yes
+; "Install for me only" (no admin) or "for all users" (asks for admin), like most installers
 PrivilegesRequired=lowest
+PrivilegesRequiredOverridesAllowed=dialog
 OutputDir=Output
 OutputBaseFilename=NameOCR-Setup-{#AppVersion}
 SetupIconFile=..\icon.ico
@@ -29,7 +33,7 @@ CloseApplications=yes
 RestartApplications=no
 
 [Tasks]
-Name: "desktopicon"; Description: "Put a NameOCR shortcut on the desktop"; GroupDescription: "Shortcuts:"
+Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"
 
 [InstallDelete]
 ; clear out the previous version's program files on upgrade (your settings live elsewhere)

@@ -10,7 +10,7 @@ import re
 import shutil
 import sys
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 REPO = ""            # "owner/name" on GitHub, for the update check ("" = off)
 
 HERE = os.path.dirname(os.path.abspath(__file__))

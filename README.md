@@ -5,7 +5,7 @@ Takes names at the end of a Roblox expedition for you. Open the Esc menu's **Peo
 ## Install
 
 1. Download **`NameOCR-Setup-x.y.z.exe`** from the [latest release](../../releases/latest).
-2. Run it. No admin rights are needed; it installs just for you and adds NameOCR to your Start menu (and desktop, if you tick the box).
+2. Run it. It asks whether to install just for you (no admin rights needed) or for everyone on the PC, lets you pick the install folder, and adds NameOCR to your Start menu (and desktop, if you tick the box).
 3. Windows will probably warn you, because NameOCR isn't from a paid "verified publisher":
    - **"Windows protected your PC"**: click **More info → Run anyway**.
    - **"Smart App Control blocked…"**: Smart App Control blocks every unsigned program, with no button to skip it. It can only be turned off in Windows Security → App & browser control, which is your call. Ask in the Discord if you're unsure.
