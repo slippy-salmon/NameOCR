@@ -32,6 +32,8 @@ WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 CloseApplications=yes
+; settings/log/frames in %APPDATA%\NameOCR are removed on uninstall (see [UninstallDelete])
+UsedUserAreasWarning=no
 RestartApplications=no
 
 [Tasks]
@@ -40,6 +42,13 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 [InstallDelete]
 ; clear out the previous version's program files on upgrade (your settings live elsewhere)
 Type: filesandordirs; Name: "{app}\_internal"
+
+[UninstallDelete]
+; uninstalling leaves nothing behind: the program files go as usual, and this
+; removes the user's settings, log and saved scan frames too. (Never delete
+; {app} wholesale: someone may have typed an existing folder as the install
+; location, and it would take their other files with it.)
+Type: filesandordirs; Name: "{userappdata}\NameOCR"
 
 [Files]
 Source: "..\dist\NameOCR\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion

@@ -13,7 +13,7 @@ Takes names at the end of a Roblox expedition for you. Open the Esc menu's **Peo
    - **"Smart App Control blocked…"**: Smart App Control blocks every unsigned program, with no button to skip it. The only way past it is turning Smart App Control off in Windows Security → App & browser control → Smart App Control settings, and it has to stay off for NameOCR to open (it checks every time a program starts, not just when installing). That's your call. Ask in the Discord if you're unsure.
    - Some antivirus programs may flag it because it listens for its hotkeys while you're in Roblox and takes screenshots of the menu. That's all it does with them (see Privacy below).
 
-Uninstalling: like any app. Search **NameOCR** in the Start menu, right-click it, and choose **Uninstall** (or Settings → Apps → Installed apps → NameOCR → Uninstall). Your settings are kept in case you reinstall; to remove them too, delete the `%APPDATA%\NameOCR` folder.
+Uninstalling: like any app. Search **NameOCR** in the Start menu, right-click it, and choose **Uninstall** (or Settings → Apps → Installed apps → NameOCR → Uninstall). This removes everything NameOCR put on your PC, including your settings, log and any saved scan frames.
 
 Updating: when there's a new version, NameOCR shows a banner with a download link. Run the new installer; your settings are kept.
 
