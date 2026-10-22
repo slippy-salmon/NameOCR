@@ -225,6 +225,24 @@ def _ratio(a: str, b: str) -> float:
     return difflib.SequenceMatcher(None, a, b).ratio()
 
 
+# the OCR's blind spots in Roblox's font: O/0, l/I/1, S/5 look alike, and a
+# thin underscore on the baseline is easily lost
+_BLIND = str.maketrans({"0": "o", "1": "l", "i": "l", "5": "s"})
+
+
+def _skeleton(s: str) -> str:
+    """A name with its blind spots evened out ("Z3FR0_44" -> "z3fro44")."""
+    return (s or "").lower().translate(_BLIND).replace("_", "")
+
+
+def _slip_dist(name: str, reading: str) -> float:
+    """Edit distance where a blind-spot slip counts a quarter: dropping a
+    clearly read character is far less likely than missing an underscore."""
+    full = _lev(name, reading)
+    core = _lev(_skeleton(name), _skeleton(reading))
+    return core + 0.25 * max(0, full - core)
+
+
 def _lev(a: str, b: str) -> int:
     a, b = a.lower(), b.lower()
     d = list(range(len(b) + 1))
@@ -241,7 +259,7 @@ def score(p, acct) -> tuple[float, float]:
     dsim = max((_ratio(acct["displayName"], d) for d in disp), default=0.5)
     reads = p.user_votes[:5]
     total = sum(max(n, 1) for _, n in reads) or 1
-    dist = min((_lev(acct["name"], r) for r, _ in reads), default=5)
+    dist = min((_slip_dist(acct["name"], r) for r, _ in reads), default=5)
     support = sum(max(n, 1) for r, n in reads
                   if r.lower() == acct["name"].lower()) / total
     return 2.0 * dsim - 0.25 * dist + 0.5 * support, dsim
@@ -375,6 +393,22 @@ def verify(players, group_id: int | None = None, api=None, progress=None,
             scored.insert(0, strong[0])
             p._scored = scored
         if len(strong) == 1:
+            return True
+        # Final pass, once every lookalike has been looked up: exactly one
+        # account that IS the reading apart from blind-spot slips (Z3FRO44
+        # read for Z3FR0_44), with a display name that doesn't argue, beats
+        # accounts that need a clearly read character thrown away. Two such
+        # accounts (S07 and 507 both real) settle nothing here.
+        skel = {_skeleton(r) for r, _ in p.user_votes[:3]}
+        twins = [x for x in scored if _skeleton(x[1]["name"]) in skel]
+        def sdisp(a):        # display match with blind spots evened out too
+            return max((_ratio(_skeleton(a["displayName"]), _skeleton(v))
+                        for v, _ in p.display_votes[:3]), default=0.0)
+        if (final and len(twins) == 1 and twins[0][0][1] >= 0.6
+                and sdisp(twins[0][1]) >= max(sdisp(a) for _, a in scored)):
+            scored.remove(twins[0])
+            scored.insert(0, twins[0])
+            p._scored = scored
             return True
         (s1, d1), a1 = scored[0]
         lead = s1 - scored[1][0][0] if len(scored) > 1 else 9
