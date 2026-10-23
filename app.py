@@ -7,6 +7,7 @@ for copying. Click a name to leave it out of the copy.
 import logging
 import os
 import re
+import shutil
 import sys
 import time
 import traceback
@@ -28,7 +29,12 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
 import config
 
 HERE = config.HERE
-logging.basicConfig(filename=config.LOG, level=logging.INFO,
+# the log never grows past about 2 MB: at 1 MB it's moved to nameocr.log.1
+# (replacing the previous one) and a fresh one starts
+from logging.handlers import RotatingFileHandler
+_logfile = RotatingFileHandler(config.LOG, maxBytes=1_000_000, backupCount=1,
+                               encoding="utf-8", delay=True)
+logging.basicConfig(level=logging.INFO, handlers=[_logfile],
                     format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("nameocr")
 
@@ -117,14 +123,18 @@ class Worker(QThread):
     progress = Signal(str)
     done = Signal(list)
 
-    def __init__(self, tracker, cfg, api=None):
+    def __init__(self, tracker, cfg, api=None, record_dir=None):
         super().__init__()
         self.tracker, self.cfg, self.api = tracker, cfg, api
+        self.record_dir = record_dir        # dev: save readings + Roblox's answers here
 
     def run(self):
         players = read_players(
             self.tracker,
             progress=lambda d, t: self.progress.emit(f"Reading names… {d}/{t}"))
+        rec = None
+        if self.record_dir and isinstance(self.api, V.RobloxAPI):
+            rec = self.api.record = {}
         try:
             V.verify(players, group_id=config.parse_group_id(self.cfg["group_id"]),
                      api=self.api, progress=self.progress.emit,
@@ -134,7 +144,54 @@ class Worker(QThread):
             for p in players:
                 if p.status == "unverified" and not p.unread:
                     p.note = f"couldn't check with Roblox ({type(e).__name__})"
+        if rec is not None:
+            self.api.record = None
+            try:
+                save_replay(self.record_dir, players, rec, self.cfg, self.tracker)
+            except Exception:
+                log.exception("couldn't save the replay record")
         self.done.emit(players)
+
+
+def save_replay(folder, players, answers, cfg, tracker=None):
+    """Dev only: what OCR read for each player and every answer Roblox gave,
+    so tools/regress.py can re-run the name check on this scan with new code
+    and show what changes. Also what the tracker did with every row it saw
+    (kept or dropped, frames seen, jumps), so a missed player can be traced."""
+    import json
+    from scanner import real_tracks, _pick
+    import rows as R
+    names = dict(answers.get("names", {}))
+    tracks = []
+    if tracker is not None:
+        kept = {id(t) for t in real_tracks(tracker)}
+        for i, t in enumerate(tracker.tracks):
+            e = {"track": i, "kept": id(t) in kept, "seen": t.seen, "pictures": len(t.user_crops),
+                 "gap_before": bool(t.gap_before),
+                 "positions": {str(k): v for k, v in getattr(t, "geoms", {}).items()}}
+            if id(t) not in kept and t.user_crops:      # what a dropped row said
+                try:
+                    e["read"] = R.ocr_username_crop(_pick(t.user_crops, 1)[0], *R.USER_READS[0])
+                except Exception:
+                    pass
+            tracks.append(e)
+    data = {
+        "players": [{"index": p.index, "user_votes": p.user_votes, "display_votes": p.display_votes,
+                     "unread": p.unread, "result": p.username, "status": p.status, "note": p.note,
+                     "gap_before": bool(p.gap_before)}
+                    for p in players],
+        "tracks": tracks, "frames": getattr(tracker, "frames", None),
+        "jumps": getattr(tracker, "jumps", None),
+        "names": names, "groups": answers.get("groups", {}),
+        "group_id": cfg.get("group_id"),
+    }
+    for p in players:                     # profile pictures for the tiebreak
+        if p.avatar is not None:
+            p.avatar.save(os.path.join(folder, f"avatar_{p.index:03d}.png"))
+    for uid, img in answers.get("headshots", {}).items():
+        img.save(os.path.join(folder, f"headshot_{uid}.png"))
+    with open(os.path.join(folder, "replay.json"), "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=1)
 
 
 class UpdateCheck(QObject):
@@ -173,6 +230,36 @@ class UpdateCheck(QObject):
             log.info("update check skipped: %s", e)
         finally:
             reply.deleteLater()
+
+
+KEEP_FRAME_SCANS = 20     # saved scan frames: only the newest this many scans are kept
+
+
+def _prune_frames(keep):
+    """Delete all but the newest `keep` saved scans (about 5 MB each). In a
+    dev copy, an old scan's small replay record (replay.json and profile
+    pictures, ~100 KB) is kept for tools/regress.py; only its frames go."""
+    def has_frames(d):
+        return any(f.startswith("frame_") for f in os.listdir(d))
+    try:
+        scans = sorted(d for d in os.listdir(config.FRAMES)
+                       if re.fullmatch(r"\d{8}-\d{6}", d)
+                       and os.path.isdir(os.path.join(config.FRAMES, d))
+                       and has_frames(os.path.join(config.FRAMES, d)))
+    except OSError:
+        return
+    for d in scans[:max(0, len(scans) - keep)]:
+        full = os.path.join(config.FRAMES, d)
+        if config.DEV and os.path.exists(os.path.join(full, "replay.json")):
+            for f in os.listdir(full):
+                if f.startswith("frame_"):
+                    try:
+                        os.remove(os.path.join(full, f))
+                    except OSError:
+                        pass
+            shutil.rmtree(os.path.join(full, "audit"), ignore_errors=True)
+        else:
+            shutil.rmtree(full, ignore_errors=True)
 
 
 def _ver(s):
@@ -255,11 +342,6 @@ TUNING_SPEC = [
      "A row has to appear in at least this many frames to count. Real rows stay on "
      "screen for many frames even when you scroll fast; one-frame flickers are "
      "usually junk. 1 turns it off. Default 2."),
-    ("Reading names", "reads_per_name", "Readings per name", "slider",
-     (1, 5, 1, "{v}"),
-     "Each username is read this many ways (different sizes and contrast); all the "
-     "readings are voted on and looked up. More gives better odds on hard names and "
-     "takes slightly longer. Default 5."),
     ("Checking with Roblox", "display_match", "Display-name match", "slider",
      (50, 95, 1, "{v}%"),
      "How closely an account's display name has to match the one read from the row "
@@ -268,20 +350,32 @@ TUNING_SPEC = [
     ("Checking with Roblox", "lookalikes", "Try lookalike spellings", "check", None,
      "When a reading isn't a real account, try the most likely misreads: O↔0, S↔5, "
      "l↔I↔1, a stray extra character, a missing underscore and so on. Default on."),
-    ("Checking with Roblox", "lookalike_limit", "Spellings to try", "slider",
-     (20, 300, 10, "{v} per reading"),
-     "How many lookalike spellings to try per reading, most likely first. Higher "
-     "means more requests to Roblox. Default 120."),
-    ("Checking with Roblox", "two_slip", "Also try two mistakes in one name", "check",
-     None,
-     "A second, larger round for names with two misread characters (like 5→S and "
-     "0→O in the same name). Only runs for names that are still unresolved. "
-     "Default on."),
     ("Checking with Roblox", "avatar_tiebreak", "Use profile pictures to break ties",
      "check", None,
      "When two accounts fit equally well, compare their profile pictures with the one "
      "in the list. It only decides if one is clearly closer (many players wear default "
      "avatars); otherwise the name goes to Needs a look. Default on."),
+    ("Checking with Roblox", "trust_username", "Trust a clear username when the display name reads badly",
+     "check", None,
+     "Short or unusual display names sometimes come out garbled (\"Cjj\" read as \"Ci)\"). "
+     "When the username matches a real account exactly, no lookalike account turns up, "
+     "and the garbled display still resembles that account's display name, the player "
+     "is Verified instead of sent to Needs a look. A short display name that reads "
+     "cleanly but is different is never ignored. Turn off to always flag display "
+     "mismatches. Default on."),
+    ("Checking with Roblox", "rate_limit_wait", "Wait for Roblox's rate limit up to", "slider",
+     (15, 300, 15, lambda v: f"{v} s" if v < 60 else f"{v // 60} min" + (f" {v % 60} s" if v % 60 else "")),
+     "Roblox only answers so many lookups a minute; scanning big lobbies again and "
+     "again can hit that limit. NameOCR waits it out and keeps going for up to this "
+     "long in total per check. If the limit still hasn't lifted, it stops, and any "
+     "name that couldn't be fully checked goes to Needs a look saying so. Longer "
+     "waits finish more checks; shorter ones give you results sooner. Default 1 min."),
+    ("Safety", "auto_stop_minutes", "Stop a forgotten scan after", "slider",
+     (1, 30, 1, "{v} min"),
+     "If a scan is left running, it stops by itself after this long and reads the "
+     "names it has, with the stop beep, so it can't keep using your CPU (or filling "
+     "your disk with saved frames) in the background. A normal scan takes well under "
+     "a minute. Default 5 min."),
 ]
 
 BEHAVIOUR_SPEC = [
@@ -291,7 +385,8 @@ BEHAVIOUR_SPEC = [
     ("bring_to_front", "Bring this window to the front when results are ready", ""),
     ("save_debug_frames", "Save scan frames (for troubleshooting)",
      "Saves every 5th frame of each scan in the data folder (debug_frames) so a scan "
-     "can be replayed and checked. About 10 MB per scan; safe to delete any time."),
+     "can be replayed and checked. About 5 MB per scan; only the newest 20 scans are "
+     "kept (older ones are deleted automatically), and they're safe to delete any time."),
 ]
 
 
@@ -409,9 +504,6 @@ class SettingsDialog(QDialog):
         self.tune["filter_position"].toggled.connect(
             lambda on: self.tune["position_tolerance"].setEnabled(on))
         self.tune["position_tolerance"].setEnabled(bool(self.cfg["filter_position"]))
-        for k in ("lookalike_limit", "two_slip"):
-            self.tune["lookalikes"].toggled.connect(self.tune[k].setEnabled)
-            self.tune[k].setEnabled(bool(self.cfg["lookalikes"]))
         sc = QScrollArea()
         sc.setWidget(tun)
         sc.setWidgetResizable(True)
@@ -682,7 +774,7 @@ class SettingsDialog(QDialog):
 class Main(QMainWindow):
     def __init__(self, api=None):
         super().__init__()
-        self.api = api                      # injectable for testing
+        self.api = api or V.RobloxAPI()     # one for the session: remembers recent lookups
         self.cfg = config.load()
         self.players, self.scanner, self.worker = [], None, None
         self.state = "idle"
@@ -946,6 +1038,7 @@ class Main(QMainWindow):
     def start_scan(self):
         debug = None
         if self.cfg["save_debug_frames"]:
+            _prune_frames(KEEP_FRAME_SCANS - 1)
             debug = os.path.join(config.FRAMES, time.strftime("%Y%m%d-%H%M%S"))
             os.makedirs(debug, exist_ok=True)
         self.scanner = Scanner(monitor=int(self.cfg["monitor"] or 1),
@@ -956,11 +1049,18 @@ class Main(QMainWindow):
         if self.cfg["beep"]:
             beep("start")
         self._set_state("scanning")
+        self._scan_t0, self._auto_note = time.monotonic(), ""
         self.timer.start(250)
         log.info("scan started (monitor %s, region %s)", self.cfg["monitor"], self.cfg["region"])
 
     def _tick(self):
         if self.state != "scanning" or not self.scanner:
+            return
+        limit = int(self.cfg["auto_stop_minutes"])
+        if time.monotonic() - self._scan_t0 >= limit * 60:
+            log.info("scan stopped automatically after %d min", limit)
+            self._auto_note = f"Scan stopped automatically after {limit} min. "
+            self.stop_scan()
             return
         s = self.scanner.stats()
         if s["error"]:
@@ -985,11 +1085,13 @@ class Main(QMainWindow):
         log.info("scan stopped: %d frames, %d tracks, %d jumps",
                  tracker.frames, len(tracker.tracks), tracker.jumps)
         if not any(t.seen for t in tracker.tracks):
-            self._set_state("idle", "Didn't find any players. Make sure the Esc menu is on "
-                                    "People in list view, and check the capture area in Settings.")
+            self._set_state("idle", self._auto_note +
+                            "Didn't find any players. Make sure the Esc menu is on "
+                            "People in list view, and check the capture area in Settings.")
             return
         self._set_state("working", "Reading names…")
-        self.worker = Worker(tracker, self.cfg, api=self.api)
+        rd = self.scanner.debug_dir if (config.DEV and self.scanner.debug_dir) else None
+        self.worker = Worker(tracker, self.cfg, api=self.api, record_dir=rd)
         self.worker.progress.connect(lambda m: self.status.setText(m))
         self.worker.done.connect(self._results)
         self.worker.start()
@@ -1007,9 +1109,11 @@ class Main(QMainWindow):
         if c["unread"]:
             parts.append(f"{c['unread']} not read")
         gaps = sum(p.gap_before for p in players)
-        msg = f"Done: {n} players. " + ", ".join(parts) + "."
+        msg = getattr(self, "_auto_note", "") + f"Done: {n} players. " + ", ".join(parts) + "."
         if gaps:
             msg += f" ⚠ The list may have skipped rows in {gaps} place(s); rescan slower to be sure."
+        if any("rate limit" in (p.note or "") for p in players):
+            msg += " ⚠ Roblox's rate limit cut some checks short; rescan in a minute."
         self._set_state("idle", msg)
         if self.cfg["bring_to_front"]:
             self.showNormal()

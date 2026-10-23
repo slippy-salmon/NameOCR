@@ -14,12 +14,13 @@ def apply(cfg: dict):
     t = int(cfg["position_tolerance"])
     S.GEOM_TOL = (t, t, max(3, round(t * 0.6)))
     S.MIN_SEEN = max(1, int(cfg["min_frames"]))
-    # reading
-    n = max(1, min(len(R.ALL_USER_READS), int(cfg["reads_per_name"])))
-    R.USER_READS = R.ALL_USER_READS[:n]
+    # reading: always every OCR setting (no longer a setting)
+    R.USER_READS = R.ALL_USER_READS
     # verifying
     V.CONFIDENT = float(cfg["display_match"]) / 100.0
     V.LOOKALIKES = bool(cfg["lookalikes"])
-    V.LOOKALIKE_LIMIT = int(cfg["lookalike_limit"])
-    V.TWO_SLIP = bool(cfg["two_slip"])
+    # spellings per reading and the two-slip round are fixed (no longer settings)
+    V.LOOKALIKE_LIMIT, V.TWO_SLIP = 120, True
     V.AVATAR_TIEBREAK = bool(cfg["avatar_tiebreak"])
+    V.TRUST_USERNAME = bool(cfg["trust_username"])
+    V.RATE_LIMIT_WAIT = int(cfg["rate_limit_wait"])

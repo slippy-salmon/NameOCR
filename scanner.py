@@ -9,6 +9,7 @@ list of players seen so far until the row fingerprints line up.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import threading
 import time
@@ -20,9 +21,12 @@ from PIL import Image
 
 import rows as R
 
+log = logging.getLogger(__name__)
+
 MATCH = 0.75            # fingerprint similarity that counts as the same row
 MAX_CROPS = 40          # distinct crops kept per player per line
 USER_OCR_N = 5          # sharpest distinct username crops OCR'd per player
+MAX_SAVED_FRAMES = 300  # "Save scan frames": at most this many per scan (~50 MB)
 DISP_OCR_N = 3
 
 
@@ -313,7 +317,7 @@ class Scanner:
                     shot = sct.grab(box)
                     img = Image.frombytes("RGB", shot.size, shot.rgb)
                     got = self.tracker.feed(img)
-                    if self.debug_dir and n % 5 == 0:
+                    if self.debug_dir and n % 5 == 0 and n // 5 < MAX_SAVED_FRAMES:
                         img.save(os.path.join(self.debug_dir, f"frame_{n:05d}.png"))
                     n += 1
                     # Auto-crop to the menu once it's been found: much faster.
@@ -431,6 +435,7 @@ def real_tracks(tracker: Tracker) -> list[Track]:
 
 
 def read_players(tracker: Tracker, progress=None) -> list[Player]:
+    t0 = time.time()
     jobs, players = [], []
     for i, t in enumerate(real_tracks(tracker)):
         p = Player(index=i, avatar=t.avatar, gap_before=t.gap_before,
@@ -456,6 +461,7 @@ def read_players(tracker: Tracker, progress=None) -> list[Player]:
             done += 1
             if progress and done % 4 == 0:
                 progress(done, len(jobs))
+    log.info("OCR: %d players, %d pictures read in %.1fs", len(players), len(jobs), time.time() - t0)
     for p in players:
         p.user_votes = vote(results[p.index]["u"])
         p.display_votes = vote(results[p.index]["d"])

@@ -31,18 +31,21 @@ Open **⚙ Settings**:
 2. Press your scan key (you'll hear a beep), scroll **slowly** to the bottom, and press it again.
 3. NameOCR comes to the front with the names:
    - white = verified, amber = needs a look, red = not in the group (left out of the copy by default)
+   - "needs a look" says why: for example two real accounts whose names look identical on screen (l/I, O/0…) and nothing else told them apart, or Roblox was too busy to finish checking (rescan in a minute)
    - **click a name** to leave it out of the copy or put it back
    - **double-click a username** in the table to fix it by hand
    - **Copy names** (or your copy key) copies the kept names, space-separated
 4. Switching the **Group** dropdown rechecks the current list against that group instantly.
 
-If the status line says you scrolled too fast, scroll back over that part before stopping.
+If the status line says you scrolled too fast, scroll back over that part before stopping. An amber ⋯ in the list marks where players may have been skipped.
+
+A scan you forget to stop ends by itself after 5 minutes (**Settings → Tuning**).
 
 **ⓘ How it works** shows the whole process as a flow chart. **Settings → Tuning** has every threshold, with an explanation on each ⓘ; the defaults are tuned to work as they are.
 
 ## Privacy
 
-NameOCR only talks to Roblox's public APIs (username lookups, group membership, profile pictures, group names) and GitHub (to check for updates). It never logs in to anything. Screenshots stay in memory unless you turn on **Save scan frames**. Your settings, the log and any saved frames live in `%APPDATA%\NameOCR` (**Settings → Other → Open data folder**).
+NameOCR only talks to Roblox's public APIs (username lookups, group membership, profile pictures, group names) and GitHub (to check for updates). It never logs in to anything. Screenshots stay in memory unless you turn on **Save scan frames**. Your settings, the log and any saved frames live in `%APPDATA%\NameOCR` (**Settings → Other → Open data folder**). The log stays around 1 MB and only the newest 20 scans' frames are kept, so it doesn't grow over time.
 
 ## Troubleshooting
 

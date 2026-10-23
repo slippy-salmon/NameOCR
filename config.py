@@ -10,7 +10,7 @@ import re
 import shutil
 import sys
 
-VERSION = "1.0.1"
+VERSION = "1.0.2"
 REPO = ""            # "owner/name" on GitHub, for the update check ("" = off)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -68,12 +68,12 @@ TUNING = {
     "min_frames": 2,
     "row_colour_tolerance": 3,
     "tracking_strictness": 90,      # % text similarity for "same row"
-    "reads_per_name": 5,
     "display_match": 80,            # % display-name similarity to auto-verify
     "lookalikes": True,
-    "lookalike_limit": 120,
-    "two_slip": True,
     "avatar_tiebreak": True,
+    "trust_username": True,         # exact username read + badly read display = OK
+    "rate_limit_wait": 60,          # seconds to wait out Roblox's rate limit per check
+    "auto_stop_minutes": 5,         # a forgotten scan stops itself after this long
 }
 BEHAVIOUR = ("exclude_not_in_group", "beep", "bring_to_front", "save_debug_frames")
 DEFAULTS.update(TUNING)

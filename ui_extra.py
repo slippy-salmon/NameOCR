@@ -102,7 +102,7 @@ STEPS = [
     ("Read the names", "🔤",
      "The sharpest image of each @username is read several ways with Tesseract "
      "(different sizes and contrast), and the display name is read too.",
-     "Readings per name"),
+     None),
     ("Check with Roblox", "✔",
      None,       # drawn as its own little flow
      "Display-name match, lookalike spellings, profile pictures"),
