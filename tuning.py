@@ -7,20 +7,21 @@ import verify as V
 def apply(cfg: dict):
     # finding rows
     R.CARD_TOL = int(cfg["row_colour_tolerance"])
-    # following rows between frames
-    R.TEXT_SAME = float(cfg["tracking_strictness"]) / 100.0
     # junk filtering
     S.FILTER_POSITION = bool(cfg["filter_position"])
-    t = int(cfg["position_tolerance"])
-    S.GEOM_TOL = (t, t, max(3, round(t * 0.6)))
     S.MIN_SEEN = max(1, int(cfg["min_frames"]))
-    # reading: always every OCR setting (no longer a setting)
-    R.USER_READS = R.ALL_USER_READS
     # verifying
     V.CONFIDENT = float(cfg["display_match"]) / 100.0
-    V.LOOKALIKES = bool(cfg["lookalikes"])
-    # spellings per reading and the two-slip round are fixed (no longer settings)
-    V.LOOKALIKE_LIMIT, V.TWO_SLIP = 120, True
     V.AVATAR_TIEBREAK = bool(cfg["avatar_tiebreak"])
-    V.TRUST_USERNAME = bool(cfg["trust_username"])
-    V.RATE_LIMIT_WAIT = int(cfg["rate_limit_wait"])
+    V.SEARCH_DEPTH = int(cfg["search_depth"])
+    # no longer settings, fixed at their best values: every OCR setting, how
+    # alike a row must look to be the same player (90%), how far the list may
+    # seem to move (5 px), lookalike spellings on, garbled display reads
+    # don't count against an account, and Roblox's rate limit is waited out
+    # for as long as it takes (with progress shown, and Stop checking)
+    R.USER_READS = R.ALL_USER_READS
+    R.TEXT_SAME = 0.90
+    S.GEOM_TOL = (5, 5, 3)
+    V.LOOKALIKES, V.LOOKALIKE_LIMIT, V.TWO_SLIP = True, 120, True
+    V.TRUST_USERNAME = True
+    V.RATE_LIMIT_WAIT = None

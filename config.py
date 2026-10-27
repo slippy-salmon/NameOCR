@@ -10,7 +10,7 @@ import re
 import shutil
 import sys
 
-VERSION = "1.0.2"
+VERSION = "1.0.3"
 REPO = ""            # "owner/name" on GitHub, for the update check ("" = off)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -57,6 +57,8 @@ DEFAULTS = {
     "beep": True,
     "bring_to_front": True,
     "save_debug_frames": False,
+    "show_tooltips": False,       # popups with details when hovering a name
+    "show_scores": False,         # show each name's evidence score in the table
 }
 
 # Tuning knobs (Settings > Tuning). Each Settings tab has its own
@@ -64,18 +66,15 @@ DEFAULTS = {
 TUNING = {
     "scan_fps": 30,
     "filter_position": True,
-    "position_tolerance": 5,
     "min_frames": 2,
     "row_colour_tolerance": 3,
-    "tracking_strictness": 90,      # % text similarity for "same row"
     "display_match": 80,            # % display-name similarity to auto-verify
-    "lookalikes": True,
     "avatar_tiebreak": True,
-    "trust_username": True,         # exact username read + badly read display = OK
-    "rate_limit_wait": 60,          # seconds to wait out Roblox's rate limit per check
+    "search_depth": 125,            # lookalike spellings tried per name
     "auto_stop_minutes": 5,         # a forgotten scan stops itself after this long
 }
-BEHAVIOUR = ("exclude_not_in_group", "beep", "bring_to_front", "save_debug_frames")
+BEHAVIOUR = ("exclude_not_in_group", "beep", "bring_to_front", "save_debug_frames", "show_tooltips",
+             "show_scores")
 DEFAULTS.update(TUNING)
 
 

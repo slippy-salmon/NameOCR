@@ -1,14 +1,16 @@
 """Scan loop: capture frames while the user scrolls the People list, follow
 each player across frames, then OCR the best crops and vote.
 
-Tracking idea: the visible rows are always a contiguous window of one list.
-Each frame's rows are slotted by their y-position (so a row that wasn't
-detected just leaves a hole), then the window is slid along the
-list of players seen so far until the row fingerprints line up.
+Tracking: each row is recognised by what it looks like (its two text lines,
+and its profile picture once loaded), never by where it sits among its
+neighbours. A row on screen is a player already seen or a new one; players
+leaving or joining mid-scan, or the list jumping, need no special handling.
+Position only decides the order players are listed in.
 """
 from __future__ import annotations
 
 import hashlib
+import copy
 import logging
 import os
 import threading
@@ -19,6 +21,7 @@ from dataclasses import dataclass, field
 
 from PIL import Image
 
+import numpy as np
 import rows as R
 
 log = logging.getLogger(__name__)
@@ -77,6 +80,8 @@ GEOM_TOL = (5, 5, 3)    # pixels of jitter that still count as the same place
 
 
 GEOM_LOCK = 3           # frames in one geometry before others are rejected
+TEXT_SURE = 0.95        # row text this close is the same player
+AVATAR_FROM_TEXT = 0.21  # display line's top sits this far (x row height) below the card's
 MIN_SEEN = 2            # a real row stays on screen for many frames
 FILTER_POSITION = True  # ignore "rows" that aren't where the People list is
 
@@ -109,11 +114,12 @@ class Tracker:
         g, n = self.geo_counts.most_common(1)[0]
         return g if n >= GEOM_LOCK else None
 
-    def feed(self, img: Image.Image) -> int:
-        """Add one frame. Returns how many rows it contributed."""
+    def feed(self, img: Image.Image, rows=None) -> int:
+        """Add one frame. Returns how many rows it contributed. `rows`:
+        R.detect_rows(img) if already done."""
         self.frames += 1
-        found = [r for r in R.detect_rows(img)
-                 if r.complete and r.user_box and r.display_box]
+        rows = R.detect_rows(img) if rows is None else rows
+        found = [r for r in rows if r.complete and r.user_box and r.display_box]
         if not found:
             return 0
         geo = self._geo_id(found)
@@ -135,131 +141,107 @@ class Tracker:
                 self._process(im, fd, g)
         return self._process(img, found, geo)
 
-    def _process(self, img, found, geo) -> int:
-        full_h = found[0].full_h
-        tops = [r.top for r in found]
-        pitch = R.row_pitch(tops, full_h)
-        slots = [round((t - tops[0]) / pitch) for t in tops]
-        if len(set(slots)) != len(slots):           # two rows in one slot
-            self.skipped += 1
-            return 0
-        sigs = [R.signature(img, r) for r in found]
+    @staticmethod
+    def _sig(img, r, h):
+        # the picture is placed from the text too, not the card's top edge:
+        # near the list's end the card's top can be a guess that's several
+        # pixels off while the text sits elsewhere, which made the same
+        # player's picture look like another one (0.27) and split them in two
+        q = copy.copy(r)
+        q.top = r.display_box[1] - int(round(AVATAR_FROM_TEXT * h))
+        q.full_h, q.bottom = h, q.top + h
+        av, _, loaded = R.signature(img, q)       # picture part as before
+        return (av, _text_sig(img, r, h), loaded)
 
-        if not self.tracks:
-            self._ensure(0, slots[-1])
-            off = 0
+    @staticmethod
+    def _sim(a, b):
+        """Same player? The two text lines decide: usernames are unique, so
+        text this close (same player 0.98+, different <= 0.80) is the same
+        player even while the profile picture is still loading and changing
+        between frames (0.6). The picture only vetoes when it's clearly
+        another one; in the grey zone the usual rule applies."""
+        t = float(a[1] @ b[1])
+        if t >= TEXT_SURE:
+            if a[2] and b[2] and float(a[0] @ b[0]) < 0.3:
+                return 0.0
+            return t
+        return R.similarity(a, b)
+
+    def _process(self, img, found, geo) -> int:
+        # fingerprint every row at this scan's one row height: the detected
+        # height wobbles by a pixel or two (75 vs 76.5), which stretches the
+        # text image enough to make a player miss themselves (0.80 vs 1.00)
+        h = self._geo_reps[geo][2] if geo is not None and geo < len(self._geo_reps) \
+            else found[0].full_h
+        sigs = [self._sig(img, r, h) for r in found]
+        # best match for each row; a player can only be one row per frame
+        pairs = sorted(((self._sim(g, t.sig), i, j)
+                        for i, g in enumerate(sigs)
+                        for j, t in enumerate(self.tracks) if t.sig is not None),
+                       reverse=True)
+        mine, taken = {}, set()
+        for sim, i, j in pairs:
+            if sim < MATCH:
+                break
+            if i not in mine and j not in taken:
+                mine[i], taken = j, taken | {j}
+        if self.tracks and not mine:
+            self.jumps += 1            # nothing on screen seen before: rows skipped
+            gap = True
         else:
-            off = self._align(slots, sigs)
-            if off is None:
-                fixed = self._repair_gap(slots, sigs)
-                if fixed is not None:
-                    off = fixed
-                elif self._matches_any(sigs):
-                    self.skipped += 1          # ambiguous frame: ignore it
-                    return 0
-                else:
-                    # Nothing on screen matches anything seen: the list
-                    # jumped (scrolled faster than we capture). Append the
-                    # rows after a gap marker.
-                    self.jumps += 1
-                    off = len(self.tracks)
-                    self._ensure(off, off + slots[-1])
-                    self.tracks[off].gap_before = True
-        lo = off + slots[0]
-        if lo < 0:                                    # new rows above
-            self.tracks[:0] = [Track() for _ in range(-lo)]
-            off -= lo
-        self._ensure(0, off + slots[-1])
-        for s, r, g in zip(slots, found, sigs):
-            self.tracks[off + s].add(img, r, g)
-            self.tracks[off + s].geoms[geo] += 1
-        # Two neighbours seen together in one frame: nothing can be missing
-        # between them, so any gap warning there is resolved.
-        present = set(slots)
-        for s in slots:
-            if s - 1 in present:
-                self.tracks[off + s].gap_before = False
+            gap = False
+        order = sorted(range(len(found)), key=lambda i: found[i].top)
+        for k, i in enumerate(order):
+            if i in mine:
+                continue
+            # new player: place it right after the nearest known row above it in
+            # this frame, else right before the nearest known row below, else last
+            above = [mine[x] for x in order[:k] if x in mine]
+            below = [mine[x] for x in order[k + 1:] if x in mine]
+            t = Track(gap_before=gap and not above)
+            gap = False
+            if above:
+                pos = above[-1] + 1
+            elif below:
+                pos = below[0]
+            else:
+                pos = len(self.tracks)
+            self.tracks.insert(pos, t)
+            mine = {x: (y + 1 if y >= pos else y) for x, y in mine.items()}
+            mine[i] = pos
+        for i, r in enumerate(found):
+            t = self.tracks[mine[i]]
+            t.add(img, r, sigs[i])
+            t.geoms[geo] += 1
+        # two list neighbours on screen together: nothing can be missing
+        # between them, so a skipped-rows marker there is resolved
+        for a, b in zip(order, order[1:]):
+            if mine[b] == mine[a] + 1:
+                self.tracks[mine[b]].gap_before = False
         self.used += 1
         return len(found)
 
-    def _ensure(self, lo, hi):
-        while len(self.tracks) <= hi:
-            self.tracks.append(Track())
 
-    def _align(self, slots, sigs):
-        n, best = len(self.tracks), None
-        for off in range(-slots[-1], n):
-            sims = []
-            for s, g in zip(slots, sigs):
-                j = off + s
-                if g is not None and 0 <= j < n and self.tracks[j].sig is not None:
-                    sims.append(R.similarity(g, self.tracks[j].sig))
-            if not sims or min(sims) < MATCH:
-                continue
-            key = (len(sims), sum(sims))
-            if best is None or key > best[0]:
-                best = (key, off)
-        return None if best is None else best[1]
-
-    def _fits(self, idx, sig):
-        t = self.tracks[idx] if 0 <= idx < len(self.tracks) else None
-        return t is not None and (sig is None or t.sig is None
-                                  or R.similarity(sig, t.sig) >= MATCH)
-
-    def _repair_gap(self, slots, sigs):
-        """The user scrolled back over rows a jump skipped. If part of this
-        frame continues the list on one side of a gap, insert the unseen rows
-        into the gap (closing it if the frame reaches the other side).
-        Returns the offset to use after insertion, or None."""
-        for g in range(1, len(self.tracks)):
-            if not self.tracks[g].gap_before:
-                continue
-            # A: top of the frame continues the segment that ends at g-1
-            for off in range(g - 1 - slots[-1], g):
-                pre = [(s, sg) for s, sg in zip(slots, sigs) if off + s < g]
-                post = [(s, sg) for s, sg in zip(slots, sigs) if off + s >= g]
-                if not pre or not post or not all(self._fits(off + s, sg) for s, sg in pre):
-                    continue
-                if not any(sg is not None and self.tracks[off + s].sig is not None
-                           for s, sg in pre):
-                    continue                    # need at least one real match
-                hit = next((s for s, sg in post
-                            if sg is not None and self.tracks[g].sig is not None and
-                            R.similarity(sg, self.tracks[g].sig) >= MATCH), None)
-                if hit is not None:
-                    ins = off + hit - g         # rows between = new
-                    after_ok = all(self._fits(off + s - ins, sg)
-                                   for s, sg in post if s > hit)
-                    if not after_ok:
-                        continue
-                else:
-                    ins = off + post[-1][0] - g + 1
-                self.tracks[g:g] = [Track() for _ in range(ins)]
-                if hit is not None:
-                    self.tracks[g + ins].gap_before = False   # gap closed
-                else:
-                    self.tracks[g + ins].gap_before = True
-                return off
-            # B: bottom of the frame continues the segment that starts at g
-            for off in range(g - slots[-1], g + 1):
-                post = [(s, sg) for s, sg in zip(slots, sigs) if off + s >= g]
-                pre = [(s, sg) for s, sg in zip(slots, sigs) if off + s < g]
-                if not pre or not post or not all(self._fits(off + s, sg) for s, sg in post):
-                    continue
-                if not any(sg is not None and self.tracks[off + s].sig is not None
-                           for s, sg in post):
-                    continue
-                ins = g - (off + pre[0][0])
-                self.tracks[g:g] = [Track() for _ in range(ins)]
-                self.tracks[g].gap_before = True          # still a gap above
-                self.tracks[g + ins].gap_before = False
-                return off + ins
-        return None
-
-    def _matches_any(self, sigs):
-        ts = [t.sig for t in self.tracks if t.sig is not None]
-        return any(R.similarity(g, t) >= MATCH
-                   for g in sigs if g is not None for t in ts)
+def _text_sig(img, r, h):
+    """The two text lines as a fixed-size picture, anchored on the text itself
+    (its left edge and the display line's top), not on the card's edges, which
+    detection places a pixel or two differently from frame to frame
+    (same player: card-anchored 0.83, text-anchored 1.00). Everything right
+    of the text is left out (different players then <= 0.80 over all scans)."""
+    x, y = min(r.display_box[0], r.user_box[0]), r.display_box[1]
+    g = np.asarray(img.crop((x, y, int(x + 6 * h), int(y + 0.68 * h))).convert("L"), float)
+    # only the text itself: voice-chat buttons appear right of short names and
+    # change (speaker, muted, talking), which split one player in two (0.83).
+    # Past the text everything is set to the text area's own average, so it
+    # adds nothing to the comparison either way
+    cut = max(r.display_box[2], r.user_box[2]) - x + int(round(0.1 * h))
+    m = g[:, :cut].mean() if 0 < cut < g.shape[1] else g.mean()
+    if 0 < cut < g.shape[1]:
+        g = g.copy()
+        g[:, cut:] = m
+    tx = np.asarray(Image.fromarray(np.clip(g, 0, 255).astype(np.uint8))
+                    .resize((240, 24), Image.BILINEAR), float).ravel() - m
+    return tx / (np.linalg.norm(tx) or 1.0)
 
 
 # ----------------------------------------------------------------- capture
@@ -368,6 +350,7 @@ class Player:
     status: str = "unverified"    # verified | check | not_in_group | unread
     note: str = ""
     alternates: list = field(default_factory=list)
+    evidence: dict | None = None  # why this account: see verify.evidence()
     excluded: bool = False
     # group checks (so switching groups can re-apply without a rescan)
     base_status: str = ""         # status before any group check

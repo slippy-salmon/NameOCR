@@ -55,6 +55,7 @@ from scanner import Scanner, read_players  # noqa: E402
 
 STATUS = {   # key: (text colour, label, table tint)
     "verified": ("#e6e9f0", "Verified", None),
+    "checking": ("#7d838e", "Checking…", None),                     # mid-check
     "check": ("#f5b942", "Needs a look", "#3a3220"),
     "not_in_group": ("#f07575", "Not in group", "#3a2224"),
     "unread": ("#8c929c", "Not read", "#26282d"),
@@ -121,12 +122,14 @@ class Hotkeys(QObject):
 # ---------------------------------------------------------------- worker
 class Worker(QThread):
     progress = Signal(str)
+    partial = Signal(list)      # players as they stand mid-check
     done = Signal(list)
 
     def __init__(self, tracker, cfg, api=None, record_dir=None):
         super().__init__()
         self.tracker, self.cfg, self.api = tracker, cfg, api
         self.record_dir = record_dir        # dev: save readings + Roblox's answers here
+        self.cancel_record = False          # dev: a new scan started: wrap the recording up
 
     def run(self):
         players = read_players(
@@ -137,20 +140,63 @@ class Worker(QThread):
             rec = self.api.record = {}
         try:
             V.verify(players, group_id=config.parse_group_id(self.cfg["group_id"]),
-                     api=self.api, progress=self.progress.emit,
+                     api=self.api, progress=self.progress.emit, partial=self.partial.emit,
                      exclude_not_in_group=self.cfg["exclude_not_in_group"])
         except Exception as e:
             log.exception("verify failed")
             for p in players:
                 if p.status == "unverified" and not p.unread:
                     p.note = f"couldn't check with Roblox ({type(e).__name__})"
+        self.done.emit(players)          # results first; the dev recording can wait
         if rec is not None:
+            try:
+                self._complete_record(players, rec)
+            except Exception:
+                log.exception("dev: couldn't complete the recording")
             self.api.record = None
             try:
                 save_replay(self.record_dir, players, rec, self.cfg, self.tracker)
             except Exception:
                 log.exception("couldn't save the replay record")
-        self.done.emit(players)
+
+    def _complete_record(self, players, rec):
+        """Dev only: also ask Roblox about every lookalike spelling (l/1/I/i,
+        O/0, S/5, a lost underscore) of what was read on each row, and of the
+        result, so a replay can answer the questions newer code may ask, not
+        just the ones this version asked. Lookups only; the results above are
+        already decided. Waits out the rate limit for up to 60 s, then notes that it stopped early."""
+        names = set()
+        for p in players:
+            seen = [u for u, _ in p.user_votes[:3]]
+            if p.display_votes and p.display_votes[0][0]:
+                seen.append(p.display_votes[0][0].replace(" ", ""))
+            if p.username:
+                seen.append(p.username)
+            for r in seen:
+                if V.valid_username(r):
+                    names.add(r.lower())
+                names.update(V._blind_twins(r))
+        todo = sorted(names - set(rec.get("names", {})))
+        rec["extra_asked"], rec["complete"] = len(todo), True
+        if not todo:
+            return
+        api = self.api
+        api.wait_limit, api.waited, api.rate_limited = 60.0, 0.0, False
+        try:
+            chunks = [todo[i:i + 100] for i in range(0, len(todo), 100)]
+            for b, chunk in enumerate(chunks, 1):
+                if api.rate_limited or self.cancel_record:
+                    break
+                self.progress.emit(f"Dev: recording lookalike accounts for future tests… {b}/{len(chunks)}")
+                api.lookup(chunk)
+                if getattr(api, "failed", 0):
+                    break
+        finally:
+            rec["complete"] = not (api.rate_limited or getattr(api, "failed", 0)
+                                   or self.cancel_record)
+            api.wait_limit = None
+        log.info("dev: recorded %d extra lookalike names%s", len(todo),
+                 "" if rec["complete"] else " (stopped early: Roblox rate limit)")
 
 
 def save_replay(folder, players, answers, cfg, tracker=None):
@@ -183,6 +229,9 @@ def save_replay(folder, players, answers, cfg, tracker=None):
         "tracks": tracks, "frames": getattr(tracker, "frames", None),
         "jumps": getattr(tracker, "jumps", None),
         "names": names, "groups": answers.get("groups", {}),
+        # dev: every lookalike spelling of every reading was also asked
+        # (False = Roblox's rate limit cut that short)
+        "complete": answers.get("complete"),
         "group_id": cfg.get("group_id"),
     }
     for p in players:                     # profile pictures for the tiebreak
@@ -323,20 +372,11 @@ TUNING_SPEC = [
     ("Finding rows", "scan_fps", "Capture rate", "slider", (5, 60, 5, "{v} fps"),
      "Screenshots per second while scanning. Higher keeps up with faster scrolling "
      "but uses more CPU (your PC may not reach the number set). Default 30."),
-    ("Finding rows", "tracking_strictness", "Tracking strictness", "slider",
-     (80, 98, 1, "{v}%"),
-     "How alike a row has to look in two frames to be treated as the same player "
-     "while the list moves. Too low can merge two players into one; too high can "
-     "list one player twice. Default 90%."),
     ("Junk filter", "filter_position", "Ignore anything that isn't the People list",
      "check", None,
      "Rows are only accepted where the People list has been sitting during the scan, "
      "so loading screens or other menus can't add fake players. Turn this off if you "
      "ever think real names are being dropped. Default on."),
-    ("Junk filter", "position_tolerance", "Position tolerance", "slider",
-     (2, 40, 1, "{v} px"),
-     "How far (in pixels) the list can seem to move and still count as the same list. "
-     "Raise it if names get dropped; lower it if junk gets through. Default 5 px."),
     ("Junk filter", "min_frames", "Flicker filter", "slider",
      (1, 6, 1, lambda v: "off" if v == 1 else f"seen in {v}+ frames"),
      "A row has to appear in at least this many frames to count. Real rows stay on "
@@ -345,31 +385,22 @@ TUNING_SPEC = [
     ("Checking with Roblox", "display_match", "Display-name match", "slider",
      (50, 95, 1, "{v}%"),
      "How closely an account's display name has to match the one read from the row "
-     "for the player to be marked Verified. Lower verifies more automatically; higher "
-     "sends more to Needs a look. Default 80%."),
-    ("Checking with Roblox", "lookalikes", "Try lookalike spellings", "check", None,
-     "When a reading isn't a real account, try the most likely misreads: O↔0, S↔5, "
-     "l↔I↔1, a stray extra character, a missing underscore and so on. Default on."),
+     "to vouch for it on its own (otherwise the username readings must be that "
+     "account apart from lookalike characters). Lower verifies more automatically; "
+     "higher sends more to Needs a look. Default 80%."),
     ("Checking with Roblox", "avatar_tiebreak", "Use profile pictures to break ties",
      "check", None,
      "When two accounts fit equally well, compare their profile pictures with the one "
      "in the list. It only decides if one is clearly closer (many players wear default "
      "avatars); otherwise the name goes to Needs a look. Default on."),
-    ("Checking with Roblox", "trust_username", "Trust a clear username when the display name reads badly",
-     "check", None,
-     "Short or unusual display names sometimes come out garbled (\"Cjj\" read as \"Ci)\"). "
-     "When the username matches a real account exactly, no lookalike account turns up, "
-     "and the garbled display still resembles that account's display name, the player "
-     "is Verified instead of sent to Needs a look. A short display name that reads "
-     "cleanly but is different is never ignored. Turn off to always flag display "
-     "mismatches. Default on."),
-    ("Checking with Roblox", "rate_limit_wait", "Wait for Roblox's rate limit up to", "slider",
-     (15, 300, 15, lambda v: f"{v} s" if v < 60 else f"{v // 60} min" + (f" {v % 60} s" if v % 60 else "")),
-     "Roblox only answers so many lookups a minute; scanning big lobbies again and "
-     "again can hit that limit. NameOCR waits it out and keeps going for up to this "
-     "long in total per check. If the limit still hasn't lifted, it stops, and any "
-     "name that couldn't be fully checked goes to Needs a look saying so. Longer "
-     "waits finish more checks; shorter ones give you results sooner. Default 1 min."),
+    ("Checking with Roblox", "search_depth", "Lookalike spellings per name", "slider",
+     (25, 400, 25, "{v}"),
+     "When a name doesn't read as a real account, NameOCR asks Roblox about its most "
+     "likely misreadings (O/0, l/I/1, a lost underscore…), likeliest first. This is "
+     "how many it may try per name. More finds the odd badly read name; fewer "
+     "finishes sooner, since Roblox only answers so many lookups a minute (NameOCR "
+     "waits that out and shows its progress; Stop checking ends it early). On every "
+     "recorded scan the right account was within the first ~100. Default 125."),
     ("Safety", "auto_stop_minutes", "Stop a forgotten scan after", "slider",
      (1, 30, 1, "{v} min"),
      "If a scan is left running, it stops by itself after this long and reads the "
@@ -387,6 +418,15 @@ BEHAVIOUR_SPEC = [
      "Saves every 5th frame of each scan in the data folder (debug_frames) so a scan "
      "can be replayed and checked. About 5 MB per scan; only the newest 20 scans are "
      "kept (older ones are deleted automatically), and they're safe to delete any time."),
+    ("show_tooltips", "Show details when hovering a name",
+     "Hovering a name in the list (or its status or score in the table) shows a popup "
+     "with its status, why it needs a look, and other possible accounts. Off: no popups."),
+    ("show_scores", "Show confidence scores",
+     "Adds a Score column to the table: how far ahead of the next possible account "
+     "the chosen one is, in OCR slips (bigger is surer; under 0.4 is a tie and goes to "
+     "Needs a look). With \"Show details when hovering a name\" on, hover a score to see "
+     "the evidence behind it: "
+     "how well the username and display lines fit, and the runner-up."),
 ]
 
 
@@ -501,9 +541,6 @@ class SettingsDialog(QDialog):
             self.tune[key] = w
         tl.addStretch(1)
         # dependent controls
-        self.tune["filter_position"].toggled.connect(
-            lambda on: self.tune["position_tolerance"].setEnabled(on))
-        self.tune["position_tolerance"].setEnabled(bool(self.cfg["filter_position"]))
         sc = QScrollArea()
         sc.setWidget(tun)
         sc.setWidgetResizable(True)
@@ -770,6 +807,98 @@ class SettingsDialog(QDialog):
         self.accept()
 
 
+def _you_left_out(p) -> bool:
+    """Grey: you left out a name that would have been copied. Names left out
+    by default (no account, not in the group) keep their own colour, struck out."""
+    return p.excluded and bool(p.user_choice) and not getattr(p, "default_out", False)
+
+
+def score_text(p) -> str:
+    """The Score column: the chosen account's lead over the next possible one."""
+    e = p.evidence
+    if not e:
+        return ""
+    if e["lead"] is None:
+        return "only match"
+    if e["picture"]:
+        return f"{e['lead']:+.1f} (picture)"
+    return f"tie ({e['lead']:+.1f})" if e["lead"] < V.MARGIN else f"{e['lead']:+.1f}"
+
+
+def _user_line(u):
+    return ("exactly this account" if u < 0.01 else
+            "this account apart from lookalike characters" if u <= 0.3 else
+            f"{u:.1f} OCR slips from this account")
+
+
+def evidence_text(p) -> str:
+    """Why this account, in words (tooltip for "Show confidence scores").
+    For a tie it goes through each kind of evidence and says why it couldn't
+    tell the two apart."""
+    e = p.evidence
+    if not e:
+        return "No account to score"
+    a, b = e["name"], e["next"]
+    d = e["display"]
+    reads = ", ".join(f"“{r}”" + (f" {n}×" if len(e["reads"]) > 1 else "") for r, n in e["reads"])
+    lines = [f"<b>{a}</b> (“{e['display_name']}”)",
+             f"Username line: read {reads}: " + _user_line(e["user"])
+             + (" on average" if len(e["reads"]) > 1 and e["user"] >= 0.01 else ""),
+             f"Display line: read “{e['display_read']}”, "
+             + ("can't be read (another script, or garbled)" if d is None else f"{d:.0%} match")]
+    if e["state"] == "weak":
+        why = (f"its display name is only a {d:.0%} match (it needs {V.CONFIDENT:.0%}), "
+               if d is not None else "the display line can't vouch for it, ")
+        lines.append("<b>Not verified:</b> " + why +
+                     ("and the username readings aren't all this account"
+                      if not e["explained"] else "and doesn't match well enough")
+                     + ", so it doesn't fit the row on its own")
+    if not b:
+        lines.append("No other account fits")
+    elif e["lead"] >= V.MARGIN and not e["picture"]:
+        lines.append(f"Next best: {b}, {e['lead']:.1f} slips behind")
+    else:
+        nd = e["next_display"]
+        tie = e["lead"] < V.MARGIN or e["picture"]
+        lines.append(f"<br><b>{b}</b> (“{e['next_display_name']}”) fits almost as well "
+                     f"({e['lead']:.1f} slips behind; under {V.MARGIN} is a tie). Each line:")
+        if e["lookalike"] and e["user"] <= 0.3 and (e["next_user"] or 0) <= 0.3:
+            lines.append("• Username: the two differ only by characters that look the same "
+                         "in Roblox's font (l/I/1, O/0, S/5, a missing _), so it can't tell")
+        else:
+            lines.append(f"• Username: {_user_line(e['user'])} vs "
+                         f"{_user_line(e['next_user'] or 0).replace('this account', b)}")
+        if V._skeleton(e["display_name"]) == V._skeleton(e["next_display_name"] or ""):
+            lines.append(f"• Display name: both are “{e['display_name']}”, so it can't tell")
+        elif d is None or nd is None:
+            lines.append("• Display name: the line couldn't be read, so no help")
+        else:
+            lines.append(f"• Display name: {d:.0%} vs {nd:.0%} match, too close to call")
+        pics = e["pictures"]
+        if e["picture"]:
+            lines.append("• Profile picture: only one looks like the one on screen, "
+                         "so that decided it")
+        elif pics == "off":
+            lines.append("• Profile picture: comparing pictures is turned off in Tuning")
+        elif pics == "not loaded":
+            lines.append("• Profile picture: it hadn't loaded on screen yet")
+        elif isinstance(pics, dict) and pics:
+            none = [n for n, v in pics.items() if v is None]
+            got = {n: v for n, v in pics.items() if v is not None}
+            if none:
+                lines.append(f"• Profile picture: {', '.join(none)} has none on Roblox to compare")
+            elif got and max(got.values()) < V.AVATAR_MATCH:
+                lines.append("• Profile picture: none of them really looks like the one on screen")
+            else:
+                lines.append("• Profile picture: " + " vs ".join(f"{v:.0%}" for v in got.values())
+                             + " alike, too close to call (e.g. the same default avatar)")
+        elif tie:
+            lines.append("• Profile picture: couldn't be compared")
+        if tie and not e["picture"]:
+            lines.append("Nothing on screen tells them apart, so it's left for you to check.")
+    return "<br>".join(lines)
+
+
 # ---------------------------------------------------------------- main window
 class Main(QMainWindow):
     def __init__(self, api=None):
@@ -818,7 +947,7 @@ class Main(QMainWindow):
         self.scan_btn = QPushButton()
         self.scan_btn.setMinimumHeight(44)
         self.scan_btn.setFont(QFont(self.font().family(), 11, QFont.DemiBold))
-        self.scan_btn.clicked.connect(self.toggle_scan)
+        self.scan_btn.clicked.connect(self._scan_clicked)
         lay.addWidget(self.scan_btn)
 
         self.banner = QLabel()
@@ -850,15 +979,16 @@ class Main(QMainWindow):
                                     "Click a name to leave it out of the copy.")
         split.addWidget(self.out)
 
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["Copy", "", "Username", "Display name", "Status"])
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(["Copy", "", "Username", "Display name", "Status",
+                                              "Score"])
         self.table.verticalHeader().hide()
         self.table.setIconSize(QSize(28, 28))
         self.table.verticalHeader().setDefaultSectionSize(34)
         hh = self.table.horizontalHeader()
         for c, mode in enumerate([QHeaderView.ResizeToContents, QHeaderView.ResizeToContents,
                                   QHeaderView.Stretch, QHeaderView.Stretch,
-                                  QHeaderView.Stretch]):
+                                  QHeaderView.Stretch, QHeaderView.ResizeToContents]):
             hh.setSectionResizeMode(c, mode)
         self.table.setSelectionMode(QAbstractItemView.NoSelection)
         self.table.setEditTriggers(QAbstractItemView.DoubleClicked |
@@ -925,6 +1055,7 @@ class Main(QMainWindow):
         self.banner.setVisible(bool(warn))
         hk = self.cfg["hotkey_copy"]
         self.copy_btn.setText(f"Copy names ({hk})" if hk else "Copy names")
+        self.table.setColumnHidden(5, not self.cfg.get("show_scores"))
         self._set_state(self.state)
 
     def _fill_groups(self):
@@ -961,9 +1092,14 @@ class Main(QMainWindow):
             return
         checked = [p for p in players if p.user_id and p.group_ids is not None
                    and p.status != "edited"]
+        # "needs a look" rows are counted on their own: their account isn't
+        # settled, so they're neither confirmed in the group nor out of it
+        inn = sum(p.status == "verified" for p in checked)
         out = sum(p.status == "not_in_group" for p in checked)
+        look = sum(p.status == "check" for p in checked)
         failed = sum(1 for p in players if p.user_id and p.group_ids is None)
-        msg = f"Checked against {name}: {len(checked) - out} in the group, {out} not."
+        msg = f"Checked against {name}: {inn} in the group, {out} not"
+        msg += f", {look} need{'s' if look == 1 else ''} a look." if look else "."
         if failed:
             msg += f" Couldn't check {failed}."
         self._set_state("idle", msg)
@@ -1025,9 +1161,20 @@ class Main(QMainWindow):
             self.scan_btn.setEnabled(True)
             self.status.setText(msg or "Scanning… scroll the People list top to bottom.")
         elif state == "working":
-            self.scan_btn.setText("Working…")
-            self.scan_btn.setEnabled(False)
+            self.scan_btn.setText("Stop checking")
+            self.scan_btn.setStyleSheet("")
+            self.scan_btn.setEnabled(True)
             self.status.setText(msg or "Working…")
+
+    def _scan_clicked(self):
+        """The button also ends a long check early (the hotkey never does: it
+        starts and stops scans only)."""
+        if self.state == "working":
+            self.api.stop = True
+            self.scan_btn.setEnabled(False)
+            self.status.setText("Stopping… finishing with what's been checked so far.")
+        else:
+            self.toggle_scan()
 
     def toggle_scan(self):
         if self.state == "idle":
@@ -1036,6 +1183,8 @@ class Main(QMainWindow):
             self.stop_scan()
 
     def start_scan(self):
+        if self.worker is not None and self.worker.isRunning():
+            self.worker.cancel_record = True      # dev: finish the last recording now
         debug = None
         if self.cfg["save_debug_frames"]:
             _prune_frames(KEEP_FRAME_SCANS - 1)
@@ -1090,11 +1239,25 @@ class Main(QMainWindow):
                             "People in list view, and check the capture area in Settings.")
             return
         self._set_state("working", "Reading names…")
+        if self.worker is not None and self.worker.isRunning():
+            self.worker.wait()                    # dev: the last recording, cancelled above
         rd = self.scanner.debug_dir if (config.DEV and self.scanner.debug_dir) else None
         self.worker = Worker(tracker, self.cfg, api=self.api, record_dir=rd)
-        self.worker.progress.connect(lambda m: self.status.setText(m))
+        self.worker.progress.connect(self._progress)
+        self.worker.partial.connect(self._partial)
         self.worker.done.connect(self._results)
         self.worker.start()
+
+    def _progress(self, msg):
+        # "Stopping…" stays put, and so do the results once they're in (the
+        # dev recording carries on quietly after them)
+        if self.state == "working" and not getattr(self.api, "stop", False):
+            self.status.setText(msg)
+
+    def _partial(self, players):
+        """Names as they get checked: the best account found so far."""
+        self.players = players
+        self.render()
 
     def _results(self, players):
         self.players = players
@@ -1112,8 +1275,8 @@ class Main(QMainWindow):
         msg = getattr(self, "_auto_note", "") + f"Done: {n} players. " + ", ".join(parts) + "."
         if gaps:
             msg += f" ⚠ The list may have skipped rows in {gaps} place(s); rescan slower to be sure."
-        if any("rate limit" in (p.note or "") for p in players):
-            msg += " ⚠ Roblox's rate limit cut some checks short; rescan in a minute."
+        if any(V.BUSY_NOTE in (p.note or "") for p in players):
+            msg += " ⚠ Checking was stopped early for some names; rescan to finish them."
         self._set_state("idle", msg)
         if self.cfg["bring_to_front"]:
             self.showNormal()
@@ -1127,7 +1290,10 @@ class Main(QMainWindow):
         for i, p in enumerate(self.players):
             if p.unread:
                 continue
-            color = EXCLUDED if p.excluded else STATUS.get(p.status, STATUS["unverified"])[0]
+            # left out by default (no account, not in the group): its own colour,
+            # struck out; grey only when you left it out yourself
+            color = (EXCLUDED if _you_left_out(p)
+                     else STATUS.get(p.status, STATUS["unverified"])[0])
             name = (p.username or p.reading).replace("<", "&lt;")
             inner = f"<s>{name}</s>" if p.excluded else name
             gap = "<span style='color:#f5b942'>⋯ </span>" if p.gap_before else ""
@@ -1135,7 +1301,9 @@ class Main(QMainWindow):
         self.out.setHtml("<div style='line-height:150%'>" + " ".join(bits) + "</div>")
         kept = sum(1 for p in self.players if not p.excluded and not p.unread and p.username)
         total = sum(1 for p in self.players if not p.unread)
-        self.count.setText(f"Names: {kept} of {total} will be copied")
+        busy = sum(1 for p in self.players if p.status == "checking")
+        self.count.setText(f"Names: {kept} of {total} will be copied"
+                           + (f" ({busy} still being checked)" if busy else ""))
         self._fill_table()
 
     def _fill_table(self):
@@ -1162,11 +1330,15 @@ class Main(QMainWindow):
             st = QTableWidgetItem(note)
             st.setFlags(Qt.ItemIsEnabled)
             st.setForeground(QColor(color))
-            st.setToolTip(note)
-            for c, it in enumerate((chk, pic, user, disp, st)):
+            st.setToolTip(note if self.cfg.get("show_tooltips") else "")
+            ev = evidence_text(p)
+            sc = QTableWidgetItem(score_text(p))
+            sc.setFlags(Qt.ItemIsEnabled)
+            sc.setToolTip(ev if self.cfg.get("show_tooltips") else "")
+            for c, it in enumerate((chk, pic, user, disp, st, sc)):
                 if tint:
                     it.setBackground(QColor(tint))
-                if p.excluded and c >= 2:
+                if _you_left_out(p) and c >= 2:
                     it.setForeground(QColor(EXCLUDED))
                 self.table.setItem(r, c, it)
         self.table.blockSignals(False)
@@ -1181,7 +1353,7 @@ class Main(QMainWindow):
 
     def _hover(self, url: QUrl):
         s = url.toString()
-        if not s.startswith("p:"):
+        if not s.startswith("p:") or not self.cfg.get("show_tooltips"):
             QToolTip.hideText()
             return
         p = self.players[int(s[2:])]
@@ -1190,6 +1362,8 @@ class Main(QMainWindow):
                  label + (f": {p.note}" if p.note else "")]
         if p.alternates:
             lines.append("Other possibilities: " + ", ".join(p.alternates))
+        if self.cfg.get("show_scores") and p.evidence:
+            lines.append(evidence_text(p))
         lines.append("<i>Click to " + ("put back in" if p.excluded else "leave out of") +
                      " the copy</i>")
         QToolTip.showText(QCursor.pos(), "<br>".join(lines), self.out)

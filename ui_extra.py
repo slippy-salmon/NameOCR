@@ -94,7 +94,7 @@ STEPS = [
      "Every row gets a fingerprint (its name text, plus the profile picture once "
      "it has loaded), so the same player is recognised in every frame as the list "
      "moves. Scrolling past rows too fast is flagged so you can scroll back.",
-     "Tracking strictness"),
+     None),
     ("Junk filter", "🧹",
      "Anything that isn't the People list is dropped: \"rows\" that show up somewhere "
      "else (like a loading screen) and one-frame flickers.",
@@ -105,7 +105,7 @@ STEPS = [
      None),
     ("Check with Roblox", "✔",
      None,       # drawn as its own little flow
-     "Display-name match, lookalike spellings, profile pictures"),
+     "Display-name match, profile pictures"),
     ("Group check", "👥",
      "Each account's groups are fetched once. Players not in the selected group are "
      "marked, and switching the group dropdown re-checks the list instantly.",
@@ -118,9 +118,9 @@ STEPS = [
 ]
 
 VERIFY_CHAIN = [("Look up every reading", "#2b3f5c"),
-                ("Display name matches the row?", "#2b3f5c"),
-                ("Try lookalike spellings", "#2b3f5c"),
-                ("Compare profile pictures", "#2b3f5c")]
+                ("Score every account on both lines", "#2b3f5c"),
+                ("Ask about lookalikes it could be", "#2b3f5c"),
+                ("Pictures only if names can't tell", "#2b3f5c")]
 OUTCOMES = [("Verified", "#e6e9f0", "#2a3a2c"), ("Needs a look", "#f5b942", "#3a3220"),
             ("Not in group", "#f07575", "#3a2224"), ("Left out", "#9aa0aa", "#363a43"),
             ("Edited by you", "#7cc4ff", "#1f2d3a")]
@@ -257,7 +257,7 @@ class FlowChart(QWidget):
         self._arrow(p, x + cw + gap - 4, my2, x + cw + 4, my2)
         p.setPen(QColor("#9aa3b2"))
         p.drawText(QRectF(x, y + 2 * ch + 22, w, 18), Qt.AlignLeft,
-                   "Stops as soon as one account clearly fits. Anything still unsure → Needs a look.")
+                   "Verified only if one account fits and clearly leads. Anything else → Needs a look.")
         # outcome chips
         cx, cy = x, y + 2 * ch + 46
         for label, fg, bg in OUTCOMES:

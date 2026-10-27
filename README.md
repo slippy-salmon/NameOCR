@@ -29,10 +29,10 @@ Open **⚙ Settings**:
 
 1. In Roblox, press Esc, open **People**, switch to **list view**, and scroll to the top.
 2. Press your scan key (you'll hear a beep), scroll **slowly** to the bottom, and press it again.
-3. NameOCR comes to the front with the names:
-   - white = verified, amber = needs a look, red = not in the group (left out of the copy by default)
-   - "needs a look" says why: for example two real accounts whose names look identical on screen (l/I, O/0…) and nothing else told them apart, or Roblox was too busy to finish checking (rescan in a minute)
-   - **click a name** to leave it out of the copy or put it back
+3. NameOCR checks each name with Roblox and fills in the list as it goes (names still being checked show as "Checking…" and aren't copied yet). Big lobbies take a minute or two, because Roblox only answers so many lookups at a time; NameOCR waits that out by itself, and **Stop checking** ends it early (unfinished names are marked "needs a look"). Then it comes to the front with the names:
+   - white = verified, amber = needs a look, red = not in the group. Red names, and anyone whose account couldn't be found, are struck out and left out of the copy by default
+   - "needs a look" says why: for example two real accounts whose names look identical on screen (l/I, O/0…) and neither the display name nor the profile picture told them apart
+   - **click a name** to leave it out of the copy (it turns grey and struck out) or put it back
    - **double-click a username** in the table to fix it by hand
    - **Copy names** (or your copy key) copies the kept names, space-separated
 4. Switching the **Group** dropdown rechecks the current list against that group instantly.
@@ -41,7 +41,7 @@ If the status line says you scrolled too fast, scroll back over that part before
 
 A scan you forget to stop ends by itself after 5 minutes (**Settings → Tuning**).
 
-**ⓘ How it works** shows the whole process as a flow chart. **Settings → Tuning** has every threshold, with an explanation on each ⓘ; the defaults are tuned to work as they are.
+**ⓘ How it works** shows the whole process as a flow chart. **Settings → Tuning** has eight settings, each explained on its ⓘ (including **Lookalike spellings per name**: how many lookalike spellings to try when a name was misread); the defaults are tuned to work as they are. **Settings → Other** can turn on **Show details when hovering a name** (why each name was decided the way it was) and **Show confidence scores** (a column with how far the chosen account led the next one).
 
 ## Privacy
 
